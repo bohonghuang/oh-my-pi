@@ -36,6 +36,7 @@ jobs:
               hash=$(find crates Cargo.toml Cargo.lock rust-toolchain.toml \
                       packages/natives/scripts packages/natives/package.json \
                       scripts/ci-build-native.ts scripts/host-detect.ts \
+                      .github/workflows/ci.yml \
                       -type f -print0 \
                     | sort -z \
                     | xargs -0 sha256sum \
@@ -98,14 +99,14 @@ jobs:
             # has every artifact a future tag could need). PRs only build linux-x64.
             include: ${{ (startsWith(github.ref, 'refs/tags/v') || github.ref ==
                'refs/heads/main') && fromJSON('[
-               {"os":"ubuntu-22.04","platform":"linux","arch":"x64","variant":"baseline","rust_checks":true},
+               {"os":"ubuntu-22.04","platform":"linux","arch":"x64","variant":"baseline","rust_checks":true,"cross_glibc_version":"2.27"},
                {"os":"ubuntu-22.04","platform":"linux","arch":"x64","variant":"modern"},
                {"os":"ubuntu-22.04","platform":"linux","arch":"arm64","target":"aarch64-unknown-linux-gnu"},
                {"os":"macos-15-intel","platform":"darwin","arch":"x64","variant":"baseline"},
                {"os":"macos-14","platform":"darwin","arch":"arm64"},
                {"os":"windows-latest","platform":"win32","arch":"x64","variant":"baseline"}
                ]') || fromJSON('[
-               {"os":"ubuntu-22.04","platform":"linux","arch":"x64","variant":"baseline","rust_checks":true},
+               {"os":"ubuntu-22.04","platform":"linux","arch":"x64","variant":"baseline","rust_checks":true,"cross_glibc_version":"2.27"},
                {"os":"ubuntu-22.04","platform":"linux","arch":"x64","variant":"modern"}
                ]') }}
       runs-on: ${{ matrix.os }}
@@ -127,6 +128,20 @@ jobs:
               save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' ||
                  startsWith(github.ref, 'refs/tags/v')) }}
               cache-workspace-crates: true
+         - name: Install Zig
+           if: matrix.cross_glibc_version
+           run: |
+              ZIG_VERSION="0.15.2"
+              curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
+              tar -xf /tmp/zig.tar.xz -C /tmp
+              sudo cp /tmp/zig-linux-x86_64-${ZIG_VERSION}/zig /usr/local/bin/
+              rm -rf /tmp/zig.tar.xz /tmp/zig-linux-x86_64-${ZIG_VERSION}
+              zig version
+         - name: Install cargo-zigbuild
+           if: matrix.cross_glibc_version
+           uses: taiki-e/install-action@v2
+           with:
+              tool: cargo-zigbuild
          - uses: taiki-e/install-action@v2
            if: ${{ !matrix.target }}
            with:
@@ -156,6 +171,20 @@ jobs:
            shell: bash
            run: |
               bun run ci:build:native
+         - name: Rebuild with glibc ${{ matrix.cross_glibc_version }} (cargo-zigbuild)
+           if: matrix.cross_glibc_version
+           env:
+              CFLAGS: "-UNDEBUG"
+              RUSTFLAGS: "-C target-cpu=x86-64-v2"
+           shell: bash
+           run: |
+              cargo zigbuild \
+                --target x86_64-unknown-linux-gnu.${{ matrix.cross_glibc_version }} \
+                --manifest-path crates/pi-natives/Cargo.toml \
+                --profile ci
+              cp target/x86_64-unknown-linux-gnu/ci/libpi_natives.so \
+                 packages/natives/native/pi_natives.linux-x64-baseline.node
+              echo "pi-natives baseline rebuilt for glibc ${{ matrix.cross_glibc_version }}"
          - name: Upload native addon(s)
            uses: actions/upload-artifact@v4
            with:
